@@ -1,4 +1,4 @@
-package main
+package knock
 
 func byteEqual(slice1, slice2 []byte) bool {
 	if len(slice1) != len(slice2) {

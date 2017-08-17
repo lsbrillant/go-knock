@@ -1,8 +1,7 @@
 // Go implementation of port knocking.
-package main
+package knock
 
 import (
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net"
@@ -98,28 +97,5 @@ func Send(host string, knocks ...Knock) {
 		}
 		conn.Write(knock.PayLoad)
 		conn.Close()
-	}
-}
-
-func main() {
-	kocks := []Knock{
-		Knock{
-			Type:    "tcp",
-			Port:    ":8080",
-			PayLoad: []byte(":)"),
-		},
-		Port(8081),
-		Port(8082),
-		Port(8083),
-		Port(8084),
-	}
-	s, err := Listen(kocks...)
-	if err != nil {
-		log.Fatal(err)
-	}
-	go Send("localhost", kocks...)
-	select {
-	case ip := <-s:
-		fmt.Printf("WOOOOOO!! %s has Knocked\n", ip)
 	}
 }
