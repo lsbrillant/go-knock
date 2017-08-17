@@ -38,6 +38,6 @@ func main() {
 			Send("localhost", knocks...)
 		}
 	} else {
-		fmt.Printf("dont fucked up")
+		fmt.Printf("tell me to do something\n")
 	}
 }
