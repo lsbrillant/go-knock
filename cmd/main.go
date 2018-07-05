@@ -12,11 +12,7 @@ func main() {
 	knocks := []Knock{
 		Port(8081),
 		Port(8082),
-		Knock{
-			Type:    "tcp",
-			Port:    ":8080",
-			PayLoad: []byte(":)"),
-		},
+		PayLoad(8080, []byte(":)")),
 		Port(8083),
 		Port(8084),
 	}
@@ -26,13 +22,15 @@ func main() {
 	if len(args) > 0 {
 		switch args[0] {
 		case "listen":
-			s, err := Listen(knocks...)
+			ln, err := ListenCtx(knocks...)
 			if err != nil {
 				log.Fatal(err)
 			}
-			select {
-			case ip := <-s:
-				fmt.Printf("WOOOOOO!! %s has Knocked\n", ip)
+			ip := ln.Accept()
+			fmt.Printf("%s is the one who knocks\n", ip)
+			ln.Close()
+			for {
+
 			}
 		case "send":
 			Send("localhost", knocks...)
