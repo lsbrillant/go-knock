@@ -14,7 +14,7 @@ import (
 type Knock struct {
 	// either udp or tcp
 	Type string
-	// listen on
+	// port to knock/listen on
 	Port int
 	// bytes to send
 	PayLoad []byte

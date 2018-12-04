@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	. "github.com/mentalpumkins/go-knock"
+	. "github.com/lsbrillant/go-knock"
 )
 
 func main() {
