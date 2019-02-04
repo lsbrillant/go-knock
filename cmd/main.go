@@ -19,21 +19,14 @@ func main() {
 
 	args := os.Args[1:]
 
+	var err error
 	if len(args) > 0 {
 		switch args[0] {
-		case "listen":
-			ln, err := ListenCtx(knocks...)
+		case "send":
+			err = Send("127.0.0.1", knocks...)
 			if err != nil {
 				log.Fatal(err)
 			}
-			ip := ln.Accept()
-			fmt.Printf("%s is the one who knocks\n", ip)
-			ln.Close()
-			for {
-
-			}
-		case "send":
-			Send("localhost", knocks...)
 		}
 	} else {
 		fmt.Printf("tell me to do something\n")

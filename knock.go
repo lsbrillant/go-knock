@@ -2,191 +2,123 @@
 package knock
 
 import (
-	"context"
-	"log"
+	"bytes"
 	"net"
-	"strconv"
-	"strings"
-	"sync"
 )
 
 // A single knock to either listen for or execute.
 type Knock struct {
-	// either udp or tcp
-	Type string
 	// port to knock/listen on
-	Port int
+	Port uint16
 	// bytes to send
-	PayLoad []byte
+	Payload []byte
 }
 
-func Port(number int) Knock {
+func Port(number uint16) Knock {
 	return Knock{
-		Type:    "tcp",
 		Port:    number,
-		PayLoad: []byte{},
+		Payload: []byte{},
 	}
 }
 
-func PayLoad(port int, payload []byte) Knock {
+func PayLoad(port uint16, payload []byte) Knock {
 	return Knock{
-		Type:    "tcp",
 		Port:    port,
-		PayLoad: payload,
+		Payload: payload,
 	}
-}
-
-// returns a basic Knock on port numbered number
-
-// listen for knocks, the channel returned gives ips that have successfully
-// knocked the knocks.
-// TODO
-// 	- better sync
-//  - context based cancel
-func Listen(knocks ...Knock) (successes chan string, err error) {
-	attempts := make(map[string]int)
-	lock := sync.RWMutex{}
-	var end int = len(knocks)
-	successes = make(chan string, 5)
-	for i, knock := range knocks {
-		var ln net.Listener
-		step := i + 1
-		ln, err = net.Listen(knock.Type, ":"+strconv.Itoa(knock.Port))
-		if err != nil {
-			return
-		}
-		go func() {
-			for {
-				conn, err := ln.Accept()
-				if err != nil {
-					continue
-				}
-				go func() {
-					defer conn.Close()
-					lock.RLock()
-					source := strings.Split(conn.RemoteAddr().String(), ":")[0]
-					stage := attempts[source]
-					lock.RUnlock()
-					lock.Lock()
-					switch {
-					case stage == step-1:
-						recv := make([]byte, len(knocks[step-1].PayLoad))
-						_, err := conn.Read(recv)
-						if err != nil {
-							// TODO: something ?
-						}
-						if byteEqual(recv, knocks[step-1].PayLoad) {
-							attempts[source], stage = step, step
-							break
-						}
-						fallthrough
-					default:
-						delete(attempts, source)
-					}
-					if stage == end {
-						successes <- source
-					}
-					lock.Unlock()
-					//log.Printf("%s at %s", source, knocks[step-1].Port)
-				}()
-			}
-		}()
-	}
-	return
-}
-
-type Listener interface {
-	Accept() string
-	Close()
-}
-
-type knockListener struct {
-	successes  chan string
-	cancelFunc func()
-}
-
-func (l *knockListener) Accept() string { return <-l.successes }
-func (l *knockListener) Close()         { l.cancelFunc() }
-
-func ListenCtx(knocks ...Knock) (Listener, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	listener := new(knockListener)
-
-	successes := make(chan string, 5)
-
-	listener.successes = successes
-	listener.cancelFunc = cancel
-
-	attempts := make(map[string]int)
-	lock := sync.RWMutex{}
-	var end int = len(knocks)
-	var ln net.Listener
-	var err error
-	for i, knock := range knocks {
-		step := i + 1
-		ln, err = net.Listen(knock.Type, ":"+strconv.Itoa(knock.Port))
-		if err != nil {
-			return nil, err
-		}
-		go func(ctx context.Context, knock Knock) {
-			log.Printf("listening on port %d", knock.Port)
-			for {
-				conn, err := ln.Accept()
-				if err != nil {
-					continue
-				}
-				select {
-				case <-ctx.Done():
-					log.Printf("exit listen on port %d", knock.Port)
-					ln.Close()
-					return
-				default:
-					go func() {
-						defer conn.Close()
-						lock.RLock()
-						source := strings.Split(conn.RemoteAddr().String(), ":")[0]
-						stage := attempts[source]
-						lock.RUnlock()
-						lock.Lock()
-						switch {
-						case stage == step-1:
-							recv := make([]byte, len(knock.PayLoad))
-							_, err := conn.Read(recv)
-							if err != nil {
-								// TODO: something ?
-							}
-							if byteEqual(recv, knock.PayLoad) {
-								attempts[source], stage = step, step
-								break
-							}
-							fallthrough
-						default:
-							delete(attempts, source)
-						}
-						if stage == end {
-							listener.successes <- source
-						}
-						lock.Unlock()
-						log.Printf("%s at %d", source, knock.Port)
-					}()
-				}
-			}
-		}(ctx, knock)
-	}
-
-	return listener, nil
 }
 
 // Sends knocks to host
-func Send(host string, knocks ...Knock) {
+func Send(host string, knocks ...Knock) error {
+
 	for _, knock := range knocks {
-	retry:
-		conn, err := net.Dial(knock.Type, host+":"+strconv.Itoa(knock.Port))
+		conn, err := net.Dial("ip4:tcp", host)
 		if err != nil {
-			conn.Close()
-			goto retry
+			return err
 		}
-		conn.Write(knock.PayLoad)
-		conn.Close()
+		defer conn.Close()
+		// Ok so now we want to make a TCP SYN packet
+		//
+		// From RFC 793
+		//
+		// 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		// |          Source Port          |       Destination Port        |
+		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		// |                        Sequence Number                        |
+		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		// |                    Acknowledgment Number                      |
+		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		// |  Data |           |U|A|P|R|S|F|                               |
+		// | Offset| Reserved  |R|C|S|S|Y|I|            Window             |
+		// |       |           |G|K|H|T|N|N|                               |
+		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		// |           Checksum            |         Urgent Pointer        |
+		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		// |                    Options                    |    Padding    |
+		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		// |                             data                              |
+		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+		var buffers net.Buffers = [][]byte{
+			// Local addr shouldn't matter because we are closing
+			// the connection affter sending a SYN
+			[]byte{0x13, 0x37},
+			// This is the dest port
+			[]byte{byte(knock.Port >> 8), byte(knock.Port & 0x00ff)},
+			// Sequence Number
+			[]byte{0x00, 0x00}, []byte{0x00, 0x00},
+			// Acknowledgment Number
+			[]byte{0x00, 0x00}, []byte{0x00, 0x00},
+			// Data Offset? + Reserved + Control bits
+			// Here we are setting the SYN bit only
+			[]byte{(20 << 2), 0x02},
+			// Window
+			[]byte{0x00, 0x00},
+			// Checksum placeholder
+			[]byte{0x00, 0x00},
+		}
+		// TCP pseudo Header for calculatingthe checksum
+		var pseudoHeader net.Buffers = [][]byte{
+			net.ParseIP(conn.LocalAddr().String()),
+			net.ParseIP(conn.RemoteAddr().String()),
+		}
+
+		var i uint16
+		// Calculate the Checksum
+		var checksum uint16
+		// local addr
+		i = (uint16(pseudoHeader[0][0]) << 8) + uint16(pseudoHeader[0][1])
+		checksum = checksum + (i ^ 0xffff)
+		i = (uint16(pseudoHeader[0][2]) << 8) + uint16(pseudoHeader[0][3])
+		checksum = checksum + (i ^ 0xffff)
+		// remote addr
+		i = (uint16(pseudoHeader[1][0]) << 8) + uint16(pseudoHeader[1][1])
+		checksum = checksum + (i ^ 0xffff)
+		i = (uint16(pseudoHeader[1][2]) << 8) + uint16(pseudoHeader[1][3])
+		checksum = checksum + (i ^ 0xffff)
+		// zero + PTCL
+		checksum = checksum + (0x0006 ^ 0xffff)
+
+		checksum = checksum + ((0x0012 + uint16(len(knock.Payload))) ^ 0xffff)
+
+		for _, buff := range buffers {
+			i = (uint16(buff[0]) << 8) + uint16(buff[1])
+			checksum = checksum + (i ^ 0xffff)
+		}
+		checksum = checksum ^ 0xffff
+
+		// Set the checksum
+		buffers[len(buffers)-1][0] = byte(checksum >> 8)
+		buffers[len(buffers)-1][1] = byte(checksum & 0x00ff)
+
+		var pkBuffer *bytes.Buffer = new(bytes.Buffer)
+
+		buffers.WriteTo(pkBuffer)
+		pkBuffer.Write([]byte{0x00, 0x00})
+		pkBuffer.Write(knock.Payload)
+
+		pkBuffer.WriteTo(conn)
+
 	}
+	return nil
 }
