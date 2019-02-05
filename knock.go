@@ -3,6 +3,7 @@ package knock
 
 import (
 	"bytes"
+	"io"
 	"net"
 )
 
@@ -31,85 +32,22 @@ func PayLoad(port uint16, payload []byte) Knock {
 // Sends knocks to host
 func Send(host string, knocks ...Knock) error {
 
+	conn, err := net.Dial("ip4:tcp", host)
+
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
 	for _, knock := range knocks {
-		conn, err := net.Dial("ip4:tcp", host)
-		if err != nil {
-			return err
-		}
-		defer conn.Close()
-		// Ok so now we want to make a TCP SYN packet
-		//
-		// From RFC 793
-		//
-		// 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		// |          Source Port          |       Destination Port        |
-		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		// |                        Sequence Number                        |
-		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		// |                    Acknowledgment Number                      |
-		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		// |  Data |           |U|A|P|R|S|F|                               |
-		// | Offset| Reserved  |R|C|S|S|Y|I|            Window             |
-		// |       |           |G|K|H|T|N|N|                               |
-		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		// |           Checksum            |         Urgent Pointer        |
-		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		// |                    Options                    |    Padding    |
-		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		// |                             data                              |
-		// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-		var buffers net.Buffers = [][]byte{
-			// Local addr shouldn't matter because we are closing
-			// the connection affter sending a SYN
-			[]byte{0x13, 0x37},
-			// This is the dest port
-			[]byte{byte(knock.Port >> 8), byte(knock.Port & 0x00ff)},
-			// Sequence Number
-			[]byte{0x00, 0x00}, []byte{0x00, 0x00},
-			// Acknowledgment Number
-			[]byte{0x00, 0x00}, []byte{0x00, 0x00},
-			// Data Offset? + Reserved + Control bits
-			// Here we are setting the SYN bit only
-			[]byte{(20 << 2), 0x02},
-			// Window
-			[]byte{0x00, 0x00},
-			// Checksum placeholder
-			[]byte{0x00, 0x00},
-		}
-		// TCP pseudo Header for calculatingthe checksum
-		var pseudoHeader net.Buffers = [][]byte{
-			net.ParseIP(conn.LocalAddr().String()),
-			net.ParseIP(conn.RemoteAddr().String()),
-		}
+		packet := new(KnockPacket)
 
-		var i uint16
-		// Calculate the Checksum
-		var checksum uint16
-		// local addr
-		i = (uint16(pseudoHeader[0][0]) << 8) + uint16(pseudoHeader[0][1])
-		checksum = checksum + (i ^ 0xffff)
-		i = (uint16(pseudoHeader[0][2]) << 8) + uint16(pseudoHeader[0][3])
-		checksum = checksum + (i ^ 0xffff)
-		// remote addr
-		i = (uint16(pseudoHeader[1][0]) << 8) + uint16(pseudoHeader[1][1])
-		checksum = checksum + (i ^ 0xffff)
-		i = (uint16(pseudoHeader[1][2]) << 8) + uint16(pseudoHeader[1][3])
-		checksum = checksum + (i ^ 0xffff)
-		// zero + PTCL
-		checksum = checksum + (0x0006 ^ 0xffff)
+		packet.SourcePort = 0x1337
+		packet.DestinationPort = knock.Port
 
-		checksum = checksum + ((0x0012 + uint16(len(knock.Payload))) ^ 0xffff)
+		packet.Data = knock.Payload
 
-		for _, buff := range buffers {
-			i = (uint16(buff[0]) << 8) + uint16(buff[1])
-			checksum = checksum + (i ^ 0xffff)
-		}
-		checksum = checksum ^ 0xffff
-
-		// Set the checksum
-		buffers[len(buffers)-1][0] = byte(checksum >> 8)
-		buffers[len(buffers)-1][1] = byte(checksum & 0x00ff)
+		buffers := makeChecksumedBuffers(conn, packet)
 
 		var pkBuffer *bytes.Buffer = new(bytes.Buffer)
 
@@ -121,4 +59,123 @@ func Send(host string, knocks ...Knock) error {
 
 	}
 	return nil
+}
+
+type KnockPacket struct {
+	SourcePort      uint16
+	DestinationPort uint16
+	SeqNumber       uint32
+	AckNumber       uint32
+	Window          uint16
+	Data            []byte
+}
+
+func u16(n uint16) []byte {
+	return []byte{byte(n >> 8), byte(n & 0x0f)}
+}
+
+func u32(n uint32) []byte {
+	return []byte{
+		byte(n >> 24), byte((n & 0x0f00) >> 16),
+		byte(n >> 8), byte((n & 0x000f)),
+	}
+}
+
+func (packet *KnockPacket) Bytes() []byte {
+	var buffer *bytes.Buffer = new(bytes.Buffer)
+
+	buffer.Write(u16(packet.SourcePort))
+	buffer.Write(u16(packet.DestinationPort))
+
+	buffer.Write(u32(packet.SeqNumber))
+	buffer.Write(u32(packet.AckNumber))
+
+	// Data Offset + Reserved + Control bits
+	// Here we are setting the SYN bit only
+	buffer.Write([]byte{(20 << 2), 0x02})
+
+	buffer.Write(u16(packet.Window))
+
+	buffer.Write(packet.Data)
+
+	return buffer.Bytes()
+}
+
+func (packet *KnockPacket) Buffers() net.Buffers {
+	// From RFC 793
+	//
+	// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	// |          Source Port          |       Destination Port        |
+	// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	// |                        Sequence Number                        |
+	// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	// |                    Acknowledgment Number                      |
+	// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	// |  Data |           |U|A|P|R|S|F|                               |
+	// | Offset| Reserved  |R|C|S|S|Y|I|            Window             |
+	// |       |           |G|K|H|T|N|N|                               |
+	// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	// |           Checksum            |         Urgent Pointer        |
+	// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	// |                    Options                    |    Padding    |
+	// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	// |                             data                              |
+	// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+	var buffers net.Buffers = [][]byte{
+		u16(packet.SourcePort), u16(packet.DestinationPort),
+
+		u32(packet.SeqNumber),
+		u32(packet.AckNumber),
+
+		[]byte{(20 << 2), 0x02}, u16(packet.Window),
+		[]byte{0x00, 0x00},
+	}
+	return buffers
+}
+
+func makePsuedoHeader(conn net.Conn, tcplen uint16) net.Buffers {
+	// +--------+--------+--------+--------+
+	// |           Source Address          |
+	// +--------+--------+--------+--------+
+	// |         Destination Address       |
+	// +--------+--------+--------+--------+
+	// |  zero  |  PTCL  |    TCP Length   |
+	// +--------+--------+--------+--------+
+	var buffers net.Buffers = [][]byte{
+		net.ParseIP(conn.LocalAddr().String()),
+		net.ParseIP(conn.RemoteAddr().String()),
+		// zero + PTCL (6 is the tcp protocal number)
+		[]byte{0x00, 0x06}, u16(tcplen),
+	}
+	return buffers
+}
+
+func calculateChecksum(buffers io.Reader) uint16 {
+	var buffer []byte = make([]byte, 2)
+	var checksum uint64
+	for {
+		_, err := buffers.Read(buffer)
+		checksum += ^(uint64((buffer[0] << 8)) + uint64(buffer[1]))
+		if err == io.EOF {
+			break
+		}
+	}
+	for (checksum >> 16) == 0 {
+		checksum = (checksum & 0xffff) + (checksum >> 16)
+	}
+	return uint16(^checksum)
+}
+
+func makeChecksumedBuffers(conn net.Conn, packet *KnockPacket) net.Buffers {
+	buffers := packet.Buffers()
+	var tcplen uint16
+	for _, buf := range buffers {
+		tcplen += uint16(len(buf))
+	}
+	pseudoHeader := makePsuedoHeader(conn, tcplen)
+	checksumBuffers := append(pseudoHeader, buffers...)
+
+	checksum := calculateChecksum(&checksumBuffers)
+	buffers[6] = u16(checksum)
+	return buffers
 }
