@@ -71,13 +71,13 @@ type KnockPacket struct {
 }
 
 func u16(n uint16) []byte {
-	return []byte{byte(n >> 8), byte(n & 0x0f)}
+	return []byte{byte(n >> 8), byte(n & 0xff)}
 }
 
 func u32(n uint32) []byte {
 	return []byte{
-		byte(n >> 24), byte((n & 0x0f00) >> 16),
-		byte(n >> 8), byte((n & 0x000f)),
+		byte(n >> 24), byte((n & 0x00ff0000) >> 16),
+		byte(n >> 8), byte((n & 0xff)),
 	}
 }
 
@@ -176,6 +176,8 @@ func makeChecksumedBuffers(conn net.Conn, packet *KnockPacket) net.Buffers {
 	checksumBuffers := append(pseudoHeader, buffers...)
 
 	checksum := calculateChecksum(&checksumBuffers)
+	// I want to find a better way of setting the checksum here
+	// The magic indexing doesn't seem like the best
 	buffers[6] = u16(checksum)
 	return buffers
 }
